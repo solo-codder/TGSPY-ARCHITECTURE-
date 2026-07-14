@@ -1,7 +1,78 @@
-.env
+# Python
 __pycache__/
 *.pyc
-data/
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+develop-eggs/
+downloads/
+eggs/
+parts/
+var/
+*.log
+
+# Виртуальное окружение
+venv/
+env/
+ENV/
+.venv
+
+# Файлы сессий Telethon (КРИТИЧНО!)
 *.session
 *.session-journal
+
+# Переменные окружения (токены, пароли)
+.env
+.env.local
+.env.*.local
+
+# Базы данных и данные
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Логи
+logs/
+*.log
+
+# Временные файлы
+temp/
+tmp/
+*.tmp
+*.temp
+
+# Системные
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# Файлы IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Сгенерированные архивы
+*.zip
+*.tar.gz
+*.rar
+
+# Медиа (если бот скачивает фото)
+media/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.mp4
+*.mov
+
+# Файлы отчётов
+export.json
+*.json
